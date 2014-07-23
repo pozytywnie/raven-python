@@ -24,16 +24,20 @@ except AttributeError:
 
 
 class BetterJSONEncoder(json.JSONEncoder):
+    ENCODER_BY_TYPE = {
+        uuid.UUID: lambda o: o.hex,
+        datetime.datetime: lambda o: o.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        set: list,
+        frozenset: list,
+        bytes: lambda o: o.decode('utf-8', errors='replace'),
+    }
+
     def default(self, obj):
-        if isinstance(obj, uuid.UUID):
-            return obj.hex
-        elif isinstance(obj, datetime.datetime):
-            return obj.strftime('%Y-%m-%dT%H:%M:%SZ')
-        elif isinstance(obj, (set, frozenset)):
-            return list(obj)
-        elif isinstance(obj, bytes):
-            return obj.decode('utf-8', errors='replace')
-        return super(BetterJSONEncoder, self).default(obj)
+        try:
+            encoder = self.ENCODER_BY_TYPE[type(obj)]
+        except KeyError:
+            return super(BetterJSONEncoder, self).default(obj)
+        return encoder(obj)
 
 
 def better_decoder(data):
@@ -43,12 +47,9 @@ def better_decoder(data):
 def dumps(value, **kwargs):
     try:
         return json.dumps(value, cls=BetterJSONEncoder, **kwargs)
-    except:
-        try:
-            kwargs['encoding'] = 'safe-utf-8'
-            return json.dumps(value, cls=BetterJSONEncoder, **kwargs)
-        except:
-            return "could not json encode: %s" % str(value)
+    except Exception:
+        kwargs['encoding'] = 'safe-utf-8'
+        return json.dumps(value, cls=BetterJSONEncoder, **kwargs)
 
 
 def loads(value, **kwargs):

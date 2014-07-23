@@ -18,10 +18,13 @@ import uuid
 import warnings
 
 from datetime import datetime
+from functools import wraps
+from types import FunctionType
 
 import raven
 from raven.conf import defaults
 from raven.context import Context
+from raven.exceptions import APIError, RateLimited
 from raven.utils import six, json, get_versions, get_auth_header, merge_dicts
 from raven.utils.encoding import to_unicode
 from raven.utils.serializer import transform
@@ -58,27 +61,30 @@ class ClientState(object):
         self.status = self.ONLINE
         self.last_check = None
         self.retry_number = 0
+        self.retry_after = 0
 
     def should_try(self):
         if self.status == self.ONLINE:
             return True
 
-        interval = min(self.retry_number, 6) ** 2
+        interval = self.retry_after or min(self.retry_number, 6) ** 2
 
         if time.time() - self.last_check > interval:
             return True
 
         return False
 
-    def set_fail(self):
+    def set_fail(self, retry_after=0):
         self.status = self.ERROR
         self.retry_number += 1
         self.last_check = time.time()
+        self.retry_after = retry_after
 
     def set_success(self):
         self.status = self.ONLINE
         self.last_check = None
         self.retry_number = 0
+        self.retry_after = 0
 
     def did_fail(self):
         return self.status == self.ERROR
@@ -109,16 +115,18 @@ class Client(object):
     >>>     print "Exception caught; reference is %s" % ident
     """
     logger = logging.getLogger('raven')
-    protocol_version = '4'
+    protocol_version = '5'
 
     _registry = TransportRegistry(transports=default_transports)
 
-    def __init__(self, dsn=None, **options):
+    def __init__(self, dsn=None, raise_send_errors=False, **options):
         global Raven
 
         o = options
 
         self.configure_logging()
+
+        self.raise_send_errors = raise_send_errors
 
         # configure loggers first
         cls = self.__class__
@@ -133,7 +141,7 @@ class Client(object):
             dsn = os.environ['SENTRY_DSN']
 
         if dsn:
-            # TODO: should we validate other options werent sent?
+            # TODO: should we validate other options weren't sent?
             urlparts = urlparse(dsn)
             self.logger.debug(
                 "Configuring Raven for host: %s://%s:%s" % (urlparts.scheme,
@@ -164,6 +172,8 @@ class Client(object):
         self.name = six.text_type(o.get('name') or defaults.NAME)
         self.auto_log_stacks = bool(
             o.get('auto_log_stacks') or defaults.AUTO_LOG_STACKS)
+        self.capture_locals = bool(
+            o.get('capture_locals', defaults.CAPTURE_LOCALS))
         self.string_max_length = int(
             o.get('string_max_length') or defaults.MAX_LENGTH_STRING)
         self.list_max_length = int(
@@ -218,7 +228,7 @@ class Client(object):
         """
         Returns a searchable string representing a message.
 
-        >>> result = client.process(**kwargs)
+        >>> result = client.capture(**kwargs)
         >>> ident = client.get_ident(result)
         """
         return '$'.join(result)
@@ -268,7 +278,6 @@ class Client(object):
 
         data.setdefault('tags', {})
         data.setdefault('extra', {})
-        data.setdefault('level', logging.ERROR)
 
         if stack is None:
             stack = self.auto_log_stacks
@@ -289,23 +298,25 @@ class Client(object):
             if k not in data:
                 data[k] = v
 
-        if stack and 'sentry.interfaces.Stacktrace' not in data:
+        if stack and 'stacktrace' not in data:
             if stack is True:
                 frames = iter_stack_frames()
 
             else:
                 frames = stack
 
+            stack_info = get_stack_info(
+                frames,
+                transformer=self.transform,
+                capture_locals=self.capture_locals,
+            )
             data.update({
-                'sentry.interfaces.Stacktrace': {
-                    'frames': get_stack_info(frames,
-                        transformer=self.transform)
-                },
+                'stacktrace': stack_info,
             })
 
-        if 'sentry.interfaces.Stacktrace' in data:
+        if 'stacktrace' in data:
             if self.include_paths:
-                for frame in data['sentry.interfaces.Stacktrace']['frames']:
+                for frame in data['stacktrace']['frames']:
                     if frame.get('in_app') is not None:
                         continue
 
@@ -323,10 +334,12 @@ class Client(object):
                         )
 
         if not culprit:
-            if 'sentry.interfaces.Stacktrace' in data:
-                culprit = get_culprit(data['sentry.interfaces.Stacktrace']['frames'])
-            elif data.get('sentry.interfaces.Exception', {}).get('stacktrace'):
-                culprit = get_culprit(data['sentry.interfaces.Exception']['stacktrace']['frames'])
+            if 'stacktrace' in data:
+                culprit = get_culprit(data['stacktrace']['frames'])
+            elif 'exception' in data:
+                stacktrace = data['exception']['values'][0].get('stacktrace')
+                if stacktrace:
+                    culprit = get_culprit(stacktrace['frames'])
 
         if not data.get('level'):
             data['level'] = kwargs.get('level') or logging.ERROR
@@ -353,7 +366,7 @@ class Client(object):
             data.update(processor.process(data))
 
         if 'message' not in data:
-            data['message'] = handler.to_string(data)
+            data['message'] = kwargs.get('message', handler.to_string(data))
 
         # tags should only be key=>u'value'
         for key, value in six.iteritems(data['tags']):
@@ -398,7 +411,7 @@ class Client(object):
         >>> client.user_context({'email': 'foo@example.com'})
         """
         return self.context.merge({
-            'sentry.interfaces.User': data,
+            'user': data,
         })
 
     def http_context(self, data, **kwargs):
@@ -408,7 +421,7 @@ class Client(object):
         >>> client.http_context({'url': 'http://example.com'})
         """
         return self.context.merge({
-            'sentry.interfaces.Http': data,
+            'request': data,
         })
 
     def extra_context(self, data, **kwargs):
@@ -439,7 +452,7 @@ class Client(object):
         To use structured data (interfaces) with capture:
 
         >>> capture('raven.events.Message', message='foo', data={
-        >>>     'sentry.interfaces.Http': {
+        >>>     'request': {
         >>>         'url': '...',
         >>>         'data': {},
         >>>         'query_string': '...',
@@ -499,7 +512,7 @@ class Client(object):
         # decode message so we can show the actual event
         try:
             data = self.decode(data)
-        except:
+        except Exception:
             message = '<failed decoding data>'
         else:
             message = data.pop('message', '<no message value>')
@@ -516,7 +529,12 @@ class Client(object):
         self.state.set_success()
 
     def _failed_send(self, e, url, data):
-        if isinstance(e, HTTPError):
+        retry_after = 0
+        if isinstance(e, APIError):
+            if isinstance(e, RateLimited):
+                retry_after = e.retry_after
+            self.error_logger.error('Unable to capture event: %s', e.message)
+        elif isinstance(e, HTTPError):
             body = e.read()
             self.error_logger.error(
                 'Unable to reach Sentry log server: %s (url: %s, body: %s)',
@@ -529,10 +547,15 @@ class Client(object):
 
         message = self._get_log_message(data)
         self.error_logger.error('Failed to submit message: %r', message)
-        self.state.set_fail()
+        self.state.set_fail(retry_after=retry_after)
 
-    def send_remote(self, url, data, headers={}):
-        if not self.state.should_try():
+    def send_remote(self, url, data, headers=None):
+        # If the client is configured to raise errors on sending,
+        # the implication is that the backoff and retry strategies
+        # will be handled by the calling application
+        if headers is None:
+            headers = {}
+        if not self.raise_send_errors and not self.state.should_try():
             message = self._get_log_message(data)
             self.error_logger.error(message)
             return
@@ -553,6 +576,8 @@ class Client(object):
                 transport.send(data, headers)
                 self._successful_send()
         except Exception as e:
+            if self.raise_send_errors:
+                raise
             failed_send(e)
 
     def send(self, auth_header=None, **data):
@@ -628,6 +653,40 @@ class Client(object):
         """
         return self.capture(
             'raven.events.Exception', exc_info=exc_info, **kwargs)
+
+    def capture_exceptions(self, function_or_exceptions, **kwargs):
+        """
+        Wrap a function in try/except and automatically call ``.captureException``
+        if it raises an exception, then the exception is reraised.
+
+        By default, it will capture ``Exception``
+
+        >>> @client.capture_exceptions
+        >>> def foo():
+        >>>     raise Exception()
+
+        You can also specify exceptions to be caught specifically
+
+        >>> @client.capture_exceptions((IOError, LookupError))
+        >>> def bar():
+        >>>     ...
+
+        ``kwargs`` are passed through to ``.captureException``.
+        """
+        def make_decorator(exceptions):
+            def decorator(func):
+                @wraps(func)
+                def wrapper(*funcargs, **funckwargs):
+                    try:
+                        return func(*funcargs, **funckwargs)
+                    except exceptions:
+                        self.captureException(**kwargs)
+                        raise
+                return wrapper
+            return decorator
+        if isinstance(function_or_exceptions, FunctionType):
+            return make_decorator((Exception,))(function_or_exceptions)
+        return make_decorator(function_or_exceptions)
 
     def captureQuery(self, query, params=(), engine=None, **kwargs):
         """

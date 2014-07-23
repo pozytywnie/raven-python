@@ -19,7 +19,11 @@ from raven.utils import six
 from raven.utils.encoding import to_string
 from raven.utils.stacks import iter_stack_frames, label_from_frame
 
-RESERVED = ('stack', 'name', 'module', 'funcName', 'args', 'msg', 'levelno', 'exc_text', 'exc_info', 'data', 'created', 'levelname', 'msecs', 'relativeCreated', 'tags')
+RESERVED = frozenset((
+    'stack', 'name', 'module', 'funcName', 'args', 'msg', 'levelno',
+    'exc_text', 'exc_info', 'data', 'created', 'levelname', 'msecs',
+    'relativeCreated', 'tags',
+))
 
 
 class SentryHandler(logging.Handler, object):
@@ -28,7 +32,7 @@ class SentryHandler(logging.Handler, object):
         if len(args) == 1:
             arg = args[0]
             if isinstance(arg, six.string_types):
-                self.client = client(dsn=arg)
+                self.client = client(dsn=arg, **kwargs)
             elif isinstance(arg, Client):
                 self.client = arg
             else:
@@ -63,6 +67,8 @@ class SentryHandler(logging.Handler, object):
 
             return self._emit(record)
         except Exception:
+            if self.client.raise_send_errors:
+                raise
             print("Top level Sentry exception caught - failed creating log record", file=sys.stderr)
             print(to_string(record.msg), file=sys.stderr)
             print(to_string(traceback.format_exc()), file=sys.stderr)
@@ -113,7 +119,7 @@ class SentryHandler(logging.Handler, object):
                 continue
             if k.startswith('_'):
                 continue
-            if '.' not in k and k not in ('culprit',):
+            if '.' not in k and k not in ('culprit', 'server_name'):
                 extra[k] = v
             else:
                 data[k] = v
@@ -155,7 +161,7 @@ class SentryHandler(logging.Handler, object):
             handler_kwargs = {'exc_info': record.exc_info}
 
         # HACK: discover a culprit when we normally couldn't
-        elif not (data.get('sentry.interfaces.Stacktrace') or data.get('culprit')) and (record.name or record.funcName):
+        elif not (data.get('stacktrace') or data.get('culprit')) and (record.name or record.funcName):
             culprit = label_from_frame({'module': record.name, 'function': record.funcName})
             if culprit:
                 data['culprit'] = culprit
