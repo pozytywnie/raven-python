@@ -96,7 +96,7 @@ class PyTest(TestCommand):
 
 
 setup(
-    name='raven',
+    name='raven-pozytywnie',
     version='5.0.0',
     author='David Cramer',
     author_email='dcramer@gmail.com',
