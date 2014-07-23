@@ -78,7 +78,10 @@ class AsyncSentryClient(Client):
                 callback=kwargs.get('callback', None)
             )
 
-    def send_remote(self, url, data, headers={}, callback=None):
+    def send_remote(self, url, data, headers=None, callback=None):
+        if headers is None:
+            headers = {}
+
         if not self.state.should_try():
             message = self._get_log_message(data)
             self.error_logger.error(message)
@@ -180,7 +183,7 @@ class SentryMixin(object):
         :param return: A dictionary.
         """
         return {
-            'sentry.interfaces.Http': {
+            'request': {
                 'url': self.request.full_url(),
                 'method': self.request.method,
                 'data': self.request.body,
@@ -199,7 +202,7 @@ class SentryMixin(object):
         Truth calue testing
         """
         return {
-            'sentry.interfaces.User': {
+            'user': {
                 'is_authenticated': True if self.get_current_user() else False
             }
         }

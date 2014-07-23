@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 Raven
-======
+=====
 
 Raven is a Python client for `Sentry <http://getsentry.com/>`_. It provides
 full out-of-the-box support for many of the popular frameworks, including
@@ -54,11 +54,16 @@ if sys.version_info[0] == 3:
     unittest2_requires = []
     webpy_tests_requires = []
 
+if sys.version_info >= (3, 3):
+    aiohttp_requires = ['aiohttp']
+else:
+    aiohttp_requires = []
+
 
 tests_require = [
     'bottle',
     'celery>=2.5',
-    'Django>=1.2',
+    'Django>=1.4',
     'django-celery>=2.5',
     'exam>=0.5.2',
     'logbook',
@@ -68,20 +73,19 @@ tests_require = [
     'pytz',
     'pytest',
     'pytest-cov>=1.4',
-    'pytest-django-lite',
+    'pytest-django',
     'python-coveralls',
     'tornado',
     'webob',
     'webtest',
     'anyjson',
-] + (flask_requires + flask_tests_requires + unittest2_requires +
-     webpy_tests_requires)
+] + (aiohttp_requires + flask_requires + flask_tests_requires +
+     unittest2_requires + webpy_tests_requires)
 
 
 class PyTest(TestCommand):
     def finalize_options(self):
         TestCommand.finalize_options(self)
-        self.test_args = []
         self.test_suite = True
 
     def run_tests(self):
@@ -93,7 +97,7 @@ class PyTest(TestCommand):
 
 setup(
     name='raven',
-    version='4.0.3-pozytywnie',
+    version='5.0.0',
     author='David Cramer',
     author_email='dcramer@gmail.com',
     url='http://github.com/getsentry/raven-python',

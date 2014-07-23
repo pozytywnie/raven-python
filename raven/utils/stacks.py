@@ -94,7 +94,7 @@ def label_from_frame(frame):
 def get_culprit(frames, *args, **kwargs):
     # We iterate through each frame looking for a deterministic culprit
     # When one is found, we mark it as last "best guess" (best_guess) and then
-    # check it against ``exclude_paths``. If it isnt listed, then we
+    # check it against ``exclude_paths``. If it isn't listed, then we
     # use this option. If nothing is found, we use the "best guess".
     if args or kwargs:
         warnings.warn('get_culprit no longer does application detection')
@@ -121,7 +121,7 @@ def get_culprit(frames, *args, **kwargs):
 def _getitem_from_frame(f_locals, key, default=None):
     """
     f_locals is not guaranteed to have .get(), but it will always
-    support __getitem__. Even if it doesnt, we return ``default``.
+    support __getitem__. Even if it doesn't, we return ``default``.
     """
     try:
         return f_locals[key]
@@ -175,7 +175,8 @@ def iter_stack_frames(frames=None):
         yield frame, lineno
 
 
-def get_stack_info(frames, transformer=transform):
+def get_stack_info(frames, transformer=transform, capture_locals=True,
+                   max_frames=50):
     """
     Given a list of frames, returns a list of stack information
     dictionary objects that are JSON-ready.
@@ -186,8 +187,14 @@ def get_stack_info(frames, transformer=transform):
     """
     __traceback_hide__ = True  # NOQA
 
-    results = []
-    for frame_info in frames:
+    half_max = max_frames / 2
+
+    top_results = []
+    bottom_results = []
+
+    total_frames = 0
+
+    for frame_no, frame_info in enumerate(frames):
         # Old, terrible API
         if isinstance(frame_info, (list, tuple)):
             frame, lineno = frame_info
@@ -226,20 +233,20 @@ def get_stack_info(frames, transformer=transform):
         # This changes /foo/site-packages/baz/bar.py into baz/bar.py
         try:
             base_filename = sys.modules[module_name.split('.', 1)[0]].__file__
-            filename = abs_path.split(base_filename.rsplit('/', 2)[0], 1)[-1][1:]
+            filename = abs_path.split(base_filename.rsplit('/', 2)[0], 1)[-1].lstrip("/")
         except:
             filename = abs_path
 
         if not filename:
             filename = abs_path
 
-        if f_locals is not None and not isinstance(f_locals, dict):
+        if capture_locals and not isinstance(f_locals, dict):
             # XXX: Genshi (and maybe others) have broken implementations of
             # f_locals that are not actually dictionaries
             try:
                 f_locals = to_dict(f_locals)
             except Exception:
-                f_locals = '<invalid local scope>'
+                f_locals = None
 
         frame_result = {
             'abs_path': abs_path,
@@ -247,8 +254,10 @@ def get_stack_info(frames, transformer=transform):
             'module': module_name or None,
             'function': function or '<unknown>',
             'lineno': lineno + 1,
-            'vars': transformer(f_locals),
         }
+        if capture_locals:
+            frame_result['vars'] = transformer(f_locals)
+
         if context_line is not None:
             frame_result.update({
                 'pre_context': pre_context,
@@ -256,5 +265,18 @@ def get_stack_info(frames, transformer=transform):
                 'post_context': post_context,
             })
 
-        results.append(frame_result)
-    return results
+        if frame_no >= half_max:
+            while len(bottom_results) > half_max - 1:
+                bottom_results.pop(0)
+            bottom_results.append(frame_result)
+        else:
+            top_results.append(frame_result)
+        total_frames += 1
+
+    stackinfo = {
+        'frames': top_results + bottom_results,
+    }
+    if total_frames > max_frames:
+        stackinfo['frames_omitted'] = (half_max + 1, total_frames - half_max + 1)
+
+    return stackinfo

@@ -1,7 +1,30 @@
+Version 5.0.0
+-------------
+
+* Sentry client protocol is now version 5.
+* Various improvements to threaded transport.
+
+Version 4.2.0
+-------------
+
+* SSL verification is now on by default.
+* Rate limits and other valid API errors are now handled more gracefully.
+* Added ``last_event_id`` and ``X-Sentry-ID`` header to Flask.
+
+Version 4.1.0
+-------------
+
+* Added verify_ssl option to HTTP transport (defaults to False).
+* Added capture_locals option (defaults to True).
+* message can now be passed to capture* functions.
+* Django <1.4 is no longer supported.
+* Function object serialization has been improved.
+* SanitizePasswordsProcessor removes API keys.
+
 Version 4.0.0
 -------------
 
-* Sentry client protocol is now version 4
+* Sentry client protocol is now version 4.
 
 Version 3.6.0
 -------------

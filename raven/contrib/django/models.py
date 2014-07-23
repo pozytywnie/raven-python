@@ -35,7 +35,7 @@ _client = (None, None)
 
 class ProxyClient(object):
     """
-    A proxy which represents the currenty client at all times.
+    A proxy which represents the currently client at all times.
     """
     # introspection support:
     __members__ = property(lambda x: x.__dir__())
@@ -141,10 +141,19 @@ def get_client(client=None):
 
         class_name = str(class_name)
 
-        instance = getattr(__import__(module, {}, {}, class_name), class_name)(**options)
-        if not tmp_client:
-            _client = (client, instance)
-        return instance
+        try:
+            Client = getattr(__import__(module, {}, {}, class_name), class_name)
+        except ImportError:
+            logger.exception('Failed to import client: %s', client)
+            if not _client[1]:
+                # If there is no previous client, set the default one.
+                client = 'raven.contrib.django.DjangoClient'
+                _client = (client, get_client(client))
+        else:
+            instance = Client(**options)
+            if not tmp_client:
+                _client = (client, instance)
+            return instance
     return _client[1]
 
 
